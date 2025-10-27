@@ -62,10 +62,49 @@ class CombinedLoss(nn.Module):
         return self.weight_ce * ce + self.weight_dice * dice
 
 
+class DeepSupervisionLoss(nn.Module):
+    """
+    Deep Supervision Loss for CAN3D
+    Combines losses from multiple decoder layers
+    """
+    
+    def __init__(self, weight_ce=0.5, weight_dice=0.5, aux_weights=(0.5, 0.3, 0.2)):
+        super(DeepSupervisionLoss, self).__init__()
+        self.main_loss = CombinedLoss(weight_ce, weight_dice)
+        self.aux_weights = aux_weights
+    
+    def forward(self, outputs, target):
+        """
+        Args:
+            outputs: tuple of (main_output, aux1, aux2, aux3) or single tensor
+            target: ground truth labels
+        """
+        # If single output (not deep supervision)
+        if not isinstance(outputs, tuple):
+            return self.main_loss(outputs, target)
+        
+        # Deep supervision: compute weighted sum of losses
+        main_output = outputs[0]
+        aux_outputs = outputs[1:]
+        
+        # Main loss
+        loss = self.main_loss(main_output, target)
+        
+        # Auxiliary losses
+        for aux_out, weight in zip(aux_outputs, self.aux_weights):
+            aux_loss = self.main_loss(aux_out, target)
+            loss += weight * aux_loss
+        
+        return loss
+
+
 def train_epoch(model, loader, criterion, optimizer, device, epoch, scaler=None):
     """Train for one epoch"""
     model.train()
     total_loss = 0
+    
+    # Check if model uses deep supervision
+    use_deep_supervision = getattr(model, 'use_deep_supervision', False)
     
     pbar = tqdm(loader, desc=f'Epoch {epoch} [Train]')
     for batch_idx, (images, labels) in enumerate(pbar):
@@ -77,14 +116,22 @@ def train_epoch(model, loader, criterion, optimizer, device, epoch, scaler=None)
         # Mixed precision training
         if scaler is not None:
             with torch.cuda.amp.autocast():
-                outputs = model(images)
+                # Call model with deep_supervision flag for CAN3D
+                if use_deep_supervision and hasattr(model, 'forward'):
+                    outputs = model(images, deep_supervision=True)
+                else:
+                    outputs = model(images)
                 loss = criterion(outputs, labels)
             
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
         else:
-            outputs = model(images)
+            # Call model with deep_supervision flag for CAN3D
+            if use_deep_supervision and hasattr(model, 'forward'):
+                outputs = model(images, deep_supervision=True)
+            else:
+                outputs = model(images)
             loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
@@ -107,7 +154,13 @@ def validate(model, loader, criterion, device, n_classes):
             images = images.to(device)
             labels = labels.to(device)
             
-            outputs = model(images)
+            # During validation, always use deep_supervision=False to get only main output
+            outputs = model(images, deep_supervision=False) if hasattr(model, 'forward') else model(images)
+            
+            # Handle tuple output (shouldn't happen with deep_supervision=False, but just in case)
+            if isinstance(outputs, tuple):
+                outputs = outputs[0]
+            
             loss = criterion(outputs, labels)
             total_loss += loss.item()
             
@@ -170,13 +223,19 @@ def train(args):
         raise ValueError(f"Unknown model: {args.model}")
     
     model = model.to(device)
+    model.use_deep_supervision = args.use_deep_supervision  # Store for training
     
     # Count parameters
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Number of trainable parameters: {n_params:,}")
     
     # Setup loss function
-    criterion = CombinedLoss(weight_ce=args.weight_ce, weight_dice=args.weight_dice)
+    if args.use_deep_supervision:
+        print("Using Deep Supervision Loss for CAN3D")
+        criterion = DeepSupervisionLoss(weight_ce=args.weight_ce, weight_dice=args.weight_dice,
+                                       aux_weights=(0.5, 0.3, 0.2))
+    else:
+        criterion = CombinedLoss(weight_ce=args.weight_ce, weight_dice=args.weight_dice)
     
     # Setup optimizer
     if args.optimizer == 'adam':
@@ -317,9 +376,13 @@ def main():
                        help='Number of base filters')
     parser.add_argument('--dropout', type=float, default=0.2,
                        help='Dropout rate')
+    parser.add_argument('--use_deep_supervision', action='store_true',
+                       help='Use deep supervision for CAN3D (improved_unet3d only)')
+    parser.add_argument('--aux_weights', type=float, nargs=3, default=[0.5, 0.3, 0.2],
+                       help='Weights for auxiliary outputs in deep supervision')
     
     # Training parameters
-    parser.add_argument('--epochs', type=int, default=200,
+    parser.add_argument('--epochs', type=int, default=50,
                        help='Number of training epochs')
     parser.add_argument('--batch_size', type=int, default=2,
                        help='Batch size')
