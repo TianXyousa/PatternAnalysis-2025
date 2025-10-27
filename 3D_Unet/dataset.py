@@ -1,6 +1,6 @@
 """
 Dataset loader for 3D Prostate MRI segmentation
-Loads NIfTI format files and applies data augmentation
+Loads NIfTI format files and applies data augmentation using MONAI
 """
 
 import os
@@ -10,6 +10,18 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from scipy.ndimage import zoom
 import random
+
+# MONAI imports for medical image transforms
+from monai.transforms import (
+    Compose,
+    RandFlip,
+    RandRotate90,
+    RandScaleIntensity,
+    RandShiftIntensity,
+    RandGaussianNoise,
+    RandAffine,
+    Rand3DElastic
+)
 
 
 class ProstateDataset(Dataset):
@@ -32,6 +44,74 @@ class ProstateDataset(Dataset):
         self.target_shape = target_shape
         self.augment = augment
         
+        # Setup MONAI transforms for augmentation
+        # Create separate transforms for image (bilinear) and label (nearest)
+        if self.augment:
+            # Spatial transforms for IMAGE (use bilinear interpolation)
+            self.spatial_transforms_image = Compose([
+                # Basic flips and rotations
+                RandFlip(spatial_axis=0, prob=0.5),
+                RandFlip(spatial_axis=1, prob=0.5),
+                RandFlip(spatial_axis=2, prob=0.5),
+                RandRotate90(prob=0.5, spatial_axes=(0, 1)),
+                
+                # Affine transformations (rotation, scaling, translation)
+                RandAffine(
+                    prob=0.3,
+                    rotate_range=(0.1, 0.1, 0.1),  # ±5.7 degrees in radians
+                    scale_range=(0.1, 0.1, 0.1),   # ±10% scaling
+                    translate_range=(10, 10, 5),   # small translations in voxels
+                    mode='bilinear',
+                    padding_mode='border',
+                ),
+                
+                # Elastic deformation
+                Rand3DElastic(
+                    prob=0.3,
+                    sigma_range=(5, 7),
+                    magnitude_range=(50, 150),
+                    mode='bilinear',
+                    padding_mode='border',
+                ),
+            ])
+            
+            # Spatial transforms for LABEL (use nearest-neighbor)
+            self.spatial_transforms_label = Compose([
+                # Same transforms but with nearest-neighbor interpolation
+                RandFlip(spatial_axis=0, prob=0.5),
+                RandFlip(spatial_axis=1, prob=0.5),
+                RandFlip(spatial_axis=2, prob=0.5),
+                RandRotate90(prob=0.5, spatial_axes=(0, 1)),
+                
+                RandAffine(
+                    prob=0.3,
+                    rotate_range=(0.1, 0.1, 0.1),
+                    scale_range=(0.1, 0.1, 0.1),
+                    translate_range=(10, 10, 5),
+                    mode='nearest',  # Key difference: nearest for labels
+                    padding_mode='border',
+                ),
+                
+                Rand3DElastic(
+                    prob=0.3,
+                    sigma_range=(5, 7),
+                    magnitude_range=(50, 150),
+                    mode='nearest',  # Key difference: nearest for labels
+                    padding_mode='border',
+                ),
+            ])
+            
+            # Intensity transforms (apply to image only)
+            self.intensity_transforms = Compose([
+                RandScaleIntensity(factors=0.1, prob=0.5),
+                RandShiftIntensity(offsets=0.1, prob=0.5),
+                RandGaussianNoise(prob=0.5, mean=0.0, std=0.01),
+            ])
+        else:
+            self.spatial_transforms_image = None
+            self.spatial_transforms_label = None
+            self.intensity_transforms = None
+        
         # Get all available files
         all_files = [f for f in os.listdir(data_dir) if f.endswith('.nii.gz')]
         
@@ -46,6 +126,7 @@ class ProstateDataset(Dataset):
             
         self.files = sorted(self.files)
         print(f"Found {len(self.files)} files")
+        print(f"Augmentation: {'MONAI transforms enabled' if self.augment else 'disabled'}")
         
     def __len__(self):
         return len(self.files)
@@ -67,42 +148,19 @@ class ProstateDataset(Dataset):
             volume = (volume - volume.min()) / (volume.max() - volume.min())
         return volume
     
-    def resample(self, volume, target_shape):
-        """Resample volume to target shape"""
+    def resample(self, volume, target_shape, is_label=False):
+        """
+        Resample volume to target shape
+        
+        Args:
+            volume: Input volume to resample
+            target_shape: Target shape (D, H, W)
+            is_label: If True, use nearest-neighbor interpolation (order=0)
+                     If False, use linear interpolation (order=1)
+        """
         factors = [t/s for t, s in zip(target_shape, volume.shape)]
-        return zoom(volume, factors, order=1)
-    
-    def augment_data(self, image, label):
-        """Apply data augmentation"""
-        # Random flip along axes
-        if random.random() > 0.5:
-            image = np.flip(image, axis=0).copy()
-            label = np.flip(label, axis=0).copy()
-        if random.random() > 0.5:
-            image = np.flip(image, axis=1).copy()
-            label = np.flip(label, axis=1).copy()
-        if random.random() > 0.5:
-            image = np.flip(image, axis=2).copy()
-            label = np.flip(label, axis=2).copy()
-            
-        # Random rotation (90, 180, 270 degrees)
-        if random.random() > 0.5:
-            k = random.randint(1, 3)
-            image = np.rot90(image, k, axes=(0, 1)).copy()
-            label = np.rot90(label, k, axes=(0, 1)).copy()
-            
-        # Random intensity shift and scale
-        if random.random() > 0.5:
-            shift = random.uniform(-0.1, 0.1)
-            scale = random.uniform(0.9, 1.1)
-            image = np.clip(image * scale + shift, 0, 1)
-            
-        # Random Gaussian noise
-        if random.random() > 0.5:
-            noise = np.random.normal(0, 0.01, image.shape)
-            image = np.clip(image + noise, 0, 1)
-            
-        return image, label
+        order = 0 if is_label else 1  # Nearest-neighbor for labels, linear for images
+        return zoom(volume, factors, order=order)
     
     def __getitem__(self, idx):
         # Load image
@@ -122,23 +180,44 @@ class ProstateDataset(Dataset):
         # Normalize image
         image = self.normalize(image)
         
-        # Resample to target shape
-        image = self.resample(image, self.target_shape)
-        label = self.resample(label, self.target_shape)
+        # Resample to target shape (use nearest-neighbor for label)
+        image = self.resample(image, self.target_shape, is_label=False)
+        label = self.resample(label, self.target_shape, is_label=True)
         
         # Round label to nearest integer (for segmentation classes)
         label = np.round(label).astype(np.int64)
         
-        # Apply augmentation
-        if self.augment:
-            image, label = self.augment_data(image, label)
-        
         # Add channel dimension for image
         image = image[np.newaxis, ...]  # (1, D, H, W)
         
-        # Convert to tensors
-        image = torch.from_numpy(image).float()
-        label = torch.from_numpy(label).long()
+        # Apply MONAI augmentation if enabled
+        if self.augment and self.spatial_transforms_image is not None:
+            # Set random seed to ensure image and label get same spatial transforms
+            import random
+            seed = random.randint(0, 2**32 - 1)
+            
+            # Apply spatial transforms to image (bilinear interpolation)
+            self.spatial_transforms_image.set_random_state(seed=seed)
+            image = self.spatial_transforms_image(image)
+            
+            # Apply spatial transforms to label (nearest-neighbor interpolation)
+            self.spatial_transforms_label.set_random_state(seed=seed)
+            label_with_channel = label[np.newaxis, ...]  # Add channel for transform
+            label_with_channel = self.spatial_transforms_label(label_with_channel)
+            label = label_with_channel[0]  # Remove channel dimension
+            
+            # Apply intensity transforms to image only
+            image = self.intensity_transforms(image)
+        
+        # Convert to tensors (MONAI transforms may already return tensors)
+        if not isinstance(image, torch.Tensor):
+            image = torch.from_numpy(np.ascontiguousarray(image)).float()
+        if not isinstance(label, torch.Tensor):
+            label = torch.from_numpy(np.ascontiguousarray(label)).long()
+        
+        # Ensure correct types
+        image = image.float()
+        label = label.long()
         
         return image, label
 
