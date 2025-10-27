@@ -162,7 +162,7 @@ def main():
     parser.add_argument('--model', type=str, default='improved_unet3d',
                        choices=['unet3d', 'improved_unet3d'],
                        help='Model architecture')
-    parser.add_argument('--n_classes', type=int, default=5,
+    parser.add_argument('--n_classes', type=int, default=6,
                        help='Number of classes')
     parser.add_argument('--base_filters', type=int, default=32,
                        help='Number of base filters')
