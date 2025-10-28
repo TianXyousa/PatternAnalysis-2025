@@ -223,10 +223,51 @@ matplotlib>=3.7.0         # Plotting and visualization
 ### Installation Commands
 
 **Option 1: Conda (Recommended for reproducibility)**
+
+**Step-by-Step Installation:**
+
+1. **Install Miniconda/Anaconda** (if not already installed)
+   - Download from: https://docs.conda.io/en/latest/miniconda.html
+   - Windows: Run the `.exe` installer
+   - Linux/Mac: Run `bash Miniconda3-latest-*.sh`
+
+2. **Create a new conda environment:**
+   ```bash
+   conda create -n unet3d python=3.10 -y
+   ```
+   This creates an isolated environment named `unet3d` with Python 3.10.
+
+3. **Activate the environment:**
+   ```bash
+   # Windows (Command Prompt or PowerShell)
+   conda activate unet3d
+   
+   # Linux/Mac
+   conda activate unet3d
+   ```
+
+4. **Install PyTorch with CUDA support:**
+   ```bash
+   conda install pytorch torchvision pytorch-cuda=11.8 -c pytorch -c nvidia -y
+   ```
+   This installs PyTorch 2.0+ with CUDA 11.8 from official channels.
+
+5. **Install remaining dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+   This installs MONAI, nibabel, tensorboard, and other required packages.
+
+**Quick Install (All-in-one):**
 ```bash
+# Create and activate environment
 conda create -n unet3d python=3.10 -y
 conda activate unet3d
+
+# Install PyTorch with CUDA
 conda install pytorch torchvision pytorch-cuda=11.8 -c pytorch -c nvidia -y
+
+# Install other dependencies
 pip install -r requirements.txt
 ```
 ### Hardware Requirements
@@ -843,4 +884,11 @@ This project is developed for educational purposes as part of **COMP3710: Patter
 
 For questions or issues, please open an issue on the [GitHub repository](https://github.com/TianXyousa/PatternAnalysis-2025).
 
-**Last Updated**: 2025-10-27
+**Last Updated**: 2025-10-28
+
+---
+
+## Acknowledgments
+
+This project was developed with the assistance of **GitHub Copilot**, All core architecture decisions, experiments, and analysis were done by the author, with Copilot providing code suggestions and implementation support.
+
