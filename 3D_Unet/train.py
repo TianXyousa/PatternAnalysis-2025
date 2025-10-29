@@ -250,11 +250,11 @@ def train(args):
     
     # Setup learning rate scheduler
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='max', factor=0.5, patience=10, verbose=True
+        optimizer, mode='max', factor=0.5, patience=10
     )
     
     # Mixed precision training
-    scaler = torch.cuda.amp.GradScaler() if args.use_amp and device.type == 'cuda' else None
+    scaler = torch.amp.GradScaler('cuda') if args.use_amp and device.type == 'cuda' else None
     
     # Training loop
     best_dice = 0.0
