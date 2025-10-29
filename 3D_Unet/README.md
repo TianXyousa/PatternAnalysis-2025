@@ -483,6 +483,7 @@ Test set:  7 patients, 18%
 
 ```bash
 git clone https://github.com/TianXyousa/PatternAnalysis-2025.git
+git checkout topic-recognition
 cd PatternAnalysis-2025/3D_Unet
 ```
 
